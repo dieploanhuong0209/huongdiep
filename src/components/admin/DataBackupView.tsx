@@ -30,6 +30,18 @@ export const DataBackupView: React.FC<DataBackupViewProps> = ({
     if (onSuccessNotice) onSuccessNotice('Đã tải xuống file sao lưu JSON!');
   };
 
+  const handleDownloadLegacy = () => {
+    const json = storage.exportLegacyJSON();
+    if (!json) { setImportStatus('Lỗi: Máy này chưa có dữ liệu cũ'); return; }
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'portfolio-legacy-before-supabase.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -100,6 +112,10 @@ export const DataBackupView: React.FC<DataBackupViewProps> = ({
         >
           <FileJson className="w-3.5 h-3.5" />
           <span>Tải file backup .json</span>
+        </button>
+        <button onClick={handleDownloadLegacy}
+          className="ml-2 px-4 py-2 bg-white border border-stone-300 text-stone-800 rounded-sm">
+          Tải dữ liệu cũ lưu trên máy này
         </button>
       </div>
 

@@ -1,84 +1,61 @@
 import { PortfolioData, Article, ProfileData } from '../types/portfolio';
 import { INITIAL_DATA } from '../data/initialData';
+import { supabase } from './supabase';
 
 const STORAGE_KEY = 'huong_diep_portfolio_data_v4';
-const DEFAULT_PASSWORD = 'HuongDiepp';
+const LEGACY_KEY = 'huong_diep_legacy_backup_before_cloud';
 
 let isSyncing = false;
+let current: PortfolioData | null = null;
+let pendingSave: Promise<void> = Promise.resolve();
+
+function normalized(input: any): PortfolioData {
+  return {
+    profile: { ...INITIAL_DATA.profile, ...(input?.profile || {}) },
+    articles: Array.isArray(input?.articles) ? input.articles : INITIAL_DATA.articles,
+    categories: Array.isArray(input?.categories) ? input.categories : INITIAL_DATA.categories,
+    formats: Array.isArray(input?.formats) ? input.formats : INITIAL_DATA.formats,
+  };
+}
+
+function locally(data: PortfolioData): void {
+  current = normalized(data);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(current));
+  window.dispatchEvent(new Event('portfolio_data_updated'));
+}
 
 export const storage = {
-  verifyPassword(input: string): boolean {
-    return input.trim() === DEFAULT_PASSWORD;
-  },
-
   getData(): PortfolioData {
+    if (current) return current;
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (!saved) {
-        this.saveData(INITIAL_DATA);
-        // Also trigger background server sync
-        this.syncFromServer();
-        return INITIAL_DATA;
-      }
-      const parsed = JSON.parse(saved);
-
-      const migratedArticles = (Array.isArray(parsed.articles) ? parsed.articles : INITIAL_DATA.articles).map(
-        (art: any) => {
-          let date = art.date;
-          if (!date) {
-            date = art.year ? `01/${art.year}` : '01/2026';
-          }
-          let title = art.title || '';
-          if (title.includes(' — ')) {
-            title = title.replace(/\s*—\s*/g, ' | ');
-          }
-          return {
-            ...art,
-            date,
-            title,
-          };
-        }
-      );
-
-      const profile: ProfileData = {
-        ...INITIAL_DATA.profile,
-        ...(parsed.profile || {}),
-        facebook: 'https://www.facebook.com/dieploanhuong099/',
-      };
-
-      return {
-        profile,
-        categories: Array.isArray(parsed.categories) && parsed.categories.length > 0 
-          ? parsed.categories 
-          : INITIAL_DATA.categories,
-        formats: Array.isArray(parsed.formats) && parsed.formats.length > 0 
-          ? parsed.formats 
-          : INITIAL_DATA.formats,
-        articles: migratedArticles,
-      };
+      // Keep the exact pre-cloud browser content available for manual migration.
+      if (saved && !localStorage.getItem(LEGACY_KEY)) localStorage.setItem(LEGACY_KEY, saved);
+      current = normalized(saved ? JSON.parse(saved) : INITIAL_DATA);
     } catch (e) {
       console.error('Failed to load portfolio data from localStorage', e);
-      return INITIAL_DATA;
+      current = normalized(INITIAL_DATA);
     }
+    return current;
   },
 
   async syncFromServer(): Promise<PortfolioData | null> {
-    if (isSyncing) return null;
+    if (!supabase || isSyncing) return null;
     isSyncing = true;
     try {
-      const res = await fetch('/api/portfolio-data', {
-        headers: { 'Cache-Control': 'no-cache' },
-      });
-      if (res.ok) {
-        const serverData = await res.json();
-        if (serverData && Array.isArray(serverData.articles) && serverData.articles.length > 0) {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(serverData));
-          window.dispatchEvent(new Event('portfolio_data_updated'));
-          return serverData;
-        }
+      await pendingSave;
+      const { data, error } = await supabase.from('portfolio_state')
+        .select('content').eq('id', 1).maybeSingle();
+      if (error) throw error;
+      if (data?.content) {
+        locally(normalized(data.content));
+        return current;
       }
     } catch (err) {
-      console.warn('Could not sync from server database:', err);
+      console.warn('Supabase sync failed:', err);
+      window.dispatchEvent(new CustomEvent('portfolio_sync_error', {
+        detail: 'Không tải được dữ liệu mới nhất từ Supabase.',
+      }));
     } finally {
       isSyncing = false;
     }
@@ -86,24 +63,27 @@ export const storage = {
   },
 
   saveData(data: PortfolioData): void {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      window.dispatchEvent(new Event('portfolio_data_updated'));
-
-      // Đẩy dữ liệu lên Server Database tập trung để máy công ty hay máy nhà đều nhận được
-      fetch('/api/portfolio-data', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-        },
-        body: JSON.stringify(data),
-      }).catch((err) => {
-        console.warn('Failed to sync data to central server database:', err);
-      });
-    } catch (e) {
-      console.error('Failed to save portfolio data to localStorage', e);
+    const client = supabase;
+    if (!client) {
+      window.dispatchEvent(new CustomEvent('portfolio_sync_error', {
+        detail: 'Chưa cấu hình Supabase, thay đổi chưa được lưu.',
+      }));
+      return;
     }
+    const snapshot = normalized(data);
+    locally(snapshot);
+    pendingSave = pendingSave.catch(() => {}).then(async () => {
+      const { data: user, error: authError } = await client.auth.getUser();
+      if (authError || !user.user) throw Error('Cần đăng nhập Admin');
+      const { error } = await client.from('portfolio_state')
+        .upsert({ id: 1, content: snapshot }, { onConflict: 'id' });
+      if (error) throw error;
+    }).catch((error) => {
+      console.error('Save failed:', error);
+      window.dispatchEvent(new CustomEvent('portfolio_sync_error', {
+        detail: 'Không lưu được thay đổi lên Supabase. Kiểm tra quyền Admin và thử lại.',
+      }));
+    });
   },
 
   addArticle(article: Omit<Article, 'id' | 'createdAt'>): Article {
@@ -181,6 +161,10 @@ export const storage = {
   exportJSON(): string {
     const data = this.getData();
     return JSON.stringify(data, null, 2);
+  },
+
+  exportLegacyJSON(): string | null {
+    return localStorage.getItem(LEGACY_KEY);
   },
 
   importJSON(jsonString: string): boolean {

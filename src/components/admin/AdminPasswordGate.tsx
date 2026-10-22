@@ -1,9 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { ArrowRight, ArrowLeft } from 'lucide-react';
-import { storage } from '../../services/storage';
 
 interface AdminPasswordGateProps {
-  onSuccess: () => void;
+  onSuccess: (email: string, password: string) => Promise<boolean>;
   onCancel: () => void;
   authorName?: string;
 }
@@ -14,10 +13,13 @@ export const AdminPasswordGate: React.FC<AdminPasswordGateProps> = ({
   authorName = 'Huong Diep',
 }) => {
   const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const [shake, setShake] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!password) {
       setShake(true);
@@ -25,15 +27,18 @@ export const AdminPasswordGate: React.FC<AdminPasswordGateProps> = ({
       return;
     }
 
-    if (storage.verifyPassword(password)) {
-      onSuccess();
+    setBusy(true);
+    setError('');
+    if (await onSuccess(email.trim(), password)) {
+      setPassword('');
     } else {
-      // Khi sai pass: CHỈ RUNG, không hiện thông báo, không tiết lộ bất cứ thông tin nào
+      setError('Đăng nhập thất bại hoặc tài khoản chưa được cấp quyền Admin.');
       setShake(true);
       setPassword('');
       if (inputRef.current) inputRef.current.focus();
       setTimeout(() => setShake(false), 500);
     }
+    setBusy(false);
   };
 
   return (
@@ -54,11 +59,15 @@ export const AdminPasswordGate: React.FC<AdminPasswordGateProps> = ({
         }`}
       >
         <form onSubmit={handleSubmit} className="space-y-6">
+          <input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email quản trị" className="w-full px-4 py-3 border border-stone-300 rounded-xl bg-white text-sm" />
           {/* Input pill capsule matching screenshot shape */}
           <div className="relative flex items-center bg-[#fafaf9] rounded-[20px] border border-stone-300 focus-within:border-stone-900 focus-within:bg-white px-4 py-2.5 transition-all shadow-inner shadow-stone-100">
             <input
               ref={inputRef}
               type="password"
+              autoComplete="current-password"
+              required
               autoFocus
               placeholder="enter password"
               value={password}
@@ -69,12 +78,14 @@ export const AdminPasswordGate: React.FC<AdminPasswordGateProps> = ({
             {/* Black arrow submit button */}
             <button
               type="submit"
+              disabled={busy}
               className="shrink-0 w-10 h-10 rounded-[14px] bg-stone-900 hover:bg-stone-800 active:scale-95 transition-all flex items-center justify-center cursor-pointer shadow-xs"
               title="Đăng nhập"
             >
               <ArrowRight className="w-4 h-4 text-white stroke-[2.5]" />
             </button>
           </div>
+          {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
 
           {/* Helper caption: "contact Huong Diep for the password" */}
           <div className="text-center">
