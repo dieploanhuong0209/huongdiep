@@ -1,0 +1,6 @@
+{
+  "name": "Huong Diep - Minimalist Writer Portfolio & Admin",
+  "description": "Minimalist editorial portfolio for writers with real-time article link and format management tool.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
