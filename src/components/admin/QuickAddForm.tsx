@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Article } from '../../types/portfolio';
-import { parseUrlHints } from '../../services/storage';
+import { parseUrlHints, storage } from '../../services/storage';
 import { fetchRealArticleMetadata, formatBrandAndTitle } from '../../services/fetchArticleMetadata';
 import { Plus, Wand2, ArrowUpRight, Check, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -10,6 +10,26 @@ interface QuickAddFormProps {
   onAddArticle: (article: Omit<Article, 'id' | 'createdAt'>) => void;
   onSuccessNotice?: (msg: string) => void;
 }
+
+// Normalize article links so URL variations with tracking parameters
+// (such as utm_source or fbclid) are treated as the same article.
+const normalizeArticleUrl = (value: string): string => {
+  try {
+    const parsed = new URL(value.trim());
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    const params = Array.from(parsed.searchParams.entries())
+      .filter(([key]) => !/^utm_/i.test(key) && !['fbclid', 'gclid', 'mc_cid', 'mc_eid'].includes(key.toLowerCase()))
+      .sort(([keyA, valA], [keyB, valB]) => keyA.localeCompare(keyB) || valA.localeCompare(valB));
+    const query = new URLSearchParams(params).toString();
+    return `${host}${pathname}${query ? `?${query}` : ''}`.toLowerCase();
+  } catch {
+    return value.trim().replace(/\/+$/, '').toLowerCase();
+  }
+};
+
+const normalizeArticleTitle = (value: string): string =>
+  value.trim().toLocaleLowerCase('vi').replace(/\s+/g, ' ');
 
 export const QuickAddForm: React.FC<QuickAddFormProps> = ({
   categories,
@@ -40,8 +60,32 @@ export const QuickAddForm: React.FC<QuickAddFormProps> = ({
   const [metadataSuccessMsg, setMetadataSuccessMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState(false);
+  const [savedArticles, setSavedArticles] = useState<Article[]>(() => storage.getData().articles);
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
 
   const fetchTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    const refreshSavedArticles = () => setSavedArticles(storage.getData().articles);
+    window.addEventListener('portfolio_data_updated', refreshSavedArticles);
+    window.addEventListener('storage', refreshSavedArticles);
+    return () => {
+      window.removeEventListener('portfolio_data_updated', refreshSavedArticles);
+      window.removeEventListener('storage', refreshSavedArticles);
+      if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
+    };
+  }, []);
+
+  const normalizedUrl = normalizeArticleUrl(url);
+  const duplicateByUrl = url.trim()
+    ? savedArticles.find((article) => article.url && normalizeArticleUrl(article.url) === normalizedUrl)
+    : undefined;
+  const currentTitle = brand.trim() && headline.trim()
+    ? formatBrandAndTitle(brand.trim(), headline.trim())
+    : headline.trim();
+  const duplicateByTitle = currentTitle && !duplicateByUrl
+    ? savedArticles.find((article) => normalizeArticleTitle(article.title) === normalizeArticleTitle(currentTitle))
+    : undefined;
 
   // Computes the mandatory "Thương hiệu | Tiêu đề bài viết" format
   const computedDisplayTitle = () => {
@@ -55,6 +99,13 @@ export const QuickAddForm: React.FC<QuickAddFormProps> = ({
     setError(null);
     setMetadataSuccessMsg(null);
 
+    if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
+
+    // Refresh against Supabase in the background, including updates made on other devices.
+    void storage.syncFromServer().then((serverData) => {
+      if (serverData) setSavedArticles(serverData.articles);
+    }).catch(() => { /* Fall back to the latest locally synchronized list. */ });
+
     const trimmed = newUrl.trim();
     if (trimmed.length > 10 && (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.includes('.vn') || trimmed.includes('.com') || trimmed.includes('/'))) {
       const hints = parseUrlHints(trimmed);
@@ -62,7 +113,6 @@ export const QuickAddForm: React.FC<QuickAddFormProps> = ({
         setPublisher(hints.publisher);
       }
 
-      if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
       fetchTimeoutRef.current = setTimeout(() => {
         triggerRealMetadataFetch(trimmed);
       }, 400);
@@ -122,8 +172,9 @@ export const QuickAddForm: React.FC<QuickAddFormProps> = ({
     triggerRealMetadataFetch(url);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isCheckingDuplicate) return;
     if (!url.trim()) {
       setError('Vui lòng nhập Link bài viết');
       return;
@@ -154,16 +205,37 @@ export const QuickAddForm: React.FC<QuickAddFormProps> = ({
       return;
     }
 
-    onAddArticle({
-      title: finalTitle,
-      brand: currentBrand,
-      url: url.trim(),
-      format: finalFormat,
-      category: finalCategory,
-      date: formattedDate,
-      publisher: publisher.trim() || undefined,
-      summary: summary.trim() || undefined,
-    });
+    setIsCheckingDuplicate(true);
+    try {
+      // Recheck before saving, in case the article was added from another device.
+      const serverData = await storage.syncFromServer();
+      const latestArticles = serverData?.articles || storage.getData().articles;
+      setSavedArticles(latestArticles);
+
+      const existingLink = latestArticles.find((article) =>
+        article.url && normalizeArticleUrl(article.url) === normalizeArticleUrl(url)
+      );
+      if (existingLink) {
+        setError(`Bài viết đã tồn tại trong portfolio: "${existingLink.title}". Vui lòng kiểm tra trước khi nhập lại.`);
+        return;
+      }
+
+      onAddArticle({
+        title: finalTitle,
+        brand: currentBrand,
+        url: url.trim(),
+        format: finalFormat,
+        category: finalCategory,
+        date: formattedDate,
+        publisher: publisher.trim() || undefined,
+        summary: summary.trim() || undefined,
+      });
+    } catch {
+      setError('Chưa thể kiểm tra bài trùng trên Supabase. Vui lòng thử lại khi kết nối ổn định.');
+      return;
+    } finally {
+      setIsCheckingDuplicate(false);
+    }
 
     // Reset form
     setUrl('');
@@ -195,6 +267,24 @@ export const QuickAddForm: React.FC<QuickAddFormProps> = ({
         <div className="flex items-center gap-2 p-3 text-xs bg-red-50 text-red-700 border border-red-200 rounded-sm font-sans">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {duplicateByUrl && (
+        <div role="alert" className="flex items-start gap-2 p-3 text-xs bg-amber-50 text-amber-900 border border-amber-300 rounded-sm font-sans">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <div>
+            <strong>Bài viết này đã có trong portfolio.</strong>
+            <p className="mt-1">{duplicateByUrl.title}</p>
+            <a href={duplicateByUrl.url} target="_blank" rel="noopener noreferrer" className="underline mt-1 inline-block">Xem bài đã lưu</a>
+          </div>
+        </div>
+      )}
+
+      {duplicateByTitle && (
+        <div role="status" className="flex items-start gap-2 p-3 text-xs bg-amber-50 text-amber-900 border border-amber-200 rounded-sm font-sans">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>Tiêu đề này có thể đã tồn tại: “{duplicateByTitle.title}”. Hãy kiểm tra trước khi lưu; các URL khác nhau vẫn được phép đăng.</span>
         </div>
       )}
 
@@ -486,10 +576,11 @@ export const QuickAddForm: React.FC<QuickAddFormProps> = ({
       <div className="pt-2">
         <button
           type="submit"
-          className="w-full py-3 px-4 bg-stone-900 hover:bg-stone-800 text-stone-100 text-xs font-editorial-mono uppercase tracking-widest font-medium rounded-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-xs"
+          disabled={Boolean(duplicateByUrl) || isCheckingDuplicate}
+          className="w-full py-3 px-4 bg-stone-900 hover:bg-stone-800 disabled:opacity-40 disabled:cursor-not-allowed text-stone-100 text-xs font-editorial-mono uppercase tracking-widest font-medium rounded-sm transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-xs"
         >
-          <Plus className="w-4 h-4" />
-          <span>Thêm bài viết & Cập nhật lên Portfolio</span>
+          {isCheckingDuplicate ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+          <span>{duplicateByUrl ? 'Bài viết đã tồn tại' : isCheckingDuplicate ? 'Đang kiểm tra bài trùng...' : 'Thêm bài viết & Cập nhật lên Portfolio'}</span>
         </button>
       </div>
     </form>
