@@ -11,6 +11,44 @@ interface ArticleListProps {
 
 const PAGE_SIZE = 10;
 
+// Dates stored in the portfolio may be DD/MM/YYYY, MM/YYYY, YYYY-MM-DD or YYYY.
+// Missing or invalid dates are placed after dated articles.
+const getPublicationTimestamp = (article: Article): number => {
+  const value = (article.date || '').trim();
+  let year: number | undefined;
+  let month = 1;
+  let day = 1;
+
+  const slashParts = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const monthYear = value.match(/^(\d{1,2})\/(\d{4})$/);
+  const isoDate = value.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
+  const yearOnly = value.match(/^(\d{4})$/);
+
+  if (slashParts) {
+    day = Number(slashParts[1]);
+    month = Number(slashParts[2]);
+    year = Number(slashParts[3]);
+  } else if (monthYear) {
+    month = Number(monthYear[1]);
+    year = Number(monthYear[2]);
+  } else if (isoDate) {
+    year = Number(isoDate[1]);
+    month = Number(isoDate[2]);
+    day = Number(isoDate[3] || 1);
+  } else if (yearOnly) {
+    year = Number(yearOnly[1]);
+  } else if (!value && article.year) {
+    year = Number(article.year);
+  }
+
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return -Infinity;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return -Infinity;
+  }
+  return date.getTime();
+};
+
 export const ArticleList: React.FC<ArticleListProps> = ({
   articles,
   selectedCategory,
@@ -41,6 +79,11 @@ export const ArticleList: React.FC<ArticleListProps> = ({
       (art.publisher && art.publisher.toLowerCase().includes(query)) ||
       (art.summary && art.summary.toLowerCase().includes(query))
     );
+  }).sort((a, b) => {
+    const aDate = getPublicationTimestamp(a);
+    const bDate = getPublicationTimestamp(b);
+    if (aDate === bDate) return 0;
+    return bDate > aDate ? 1 : -1;
   });
 
   const totalPages = Math.max(1, Math.ceil(filteredArticles.length / PAGE_SIZE));
