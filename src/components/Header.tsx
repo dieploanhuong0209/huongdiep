@@ -14,7 +14,7 @@ export const Header: React.FC<HeaderProps> = ({ profile }) => {
           <h1 className="font-editorial-serif text-4xl sm:text-5xl font-normal text-stone-900 tracking-tight leading-none select-none">
             {profile.name || 'Hương Diệp'}
           </h1>
-          <p className="font-editorial-mono text-xs tracking-[0.28em] text-stone-700 uppercase font-medium mt-2">
+          <p className="font-editorial-mono italic text-xs tracking-[0.28em] text-stone-700 uppercase font-medium mt-2">
             {profile.title || 'WRITER'}
           </p>
         </div>
