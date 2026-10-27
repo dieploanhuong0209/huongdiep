@@ -11,7 +11,7 @@ export const Header: React.FC<HeaderProps> = ({ profile }) => {
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-6">
         {/* Name and Title */}
         <div>
-          <h1 className="font-editorial-serif italic text-4xl sm:text-5xl font-normal text-stone-900 tracking-tight leading-none select-none">
+          <h1 className="font-editorial-serif text-4xl sm:text-5xl font-normal text-stone-900 tracking-tight leading-none select-none">
             {profile.name || 'Hương Diệp'}
           </h1>
           <p className="font-editorial-mono text-xs tracking-[0.28em] text-stone-700 uppercase font-medium mt-2">
